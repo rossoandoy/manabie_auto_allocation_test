@@ -1,0 +1,13 @@
+# バージョン管理・IDE
+.git
+.gitignore
+.cursorignore
+README.md
+*.md
+.env
+.env.*
+.clasprc.json
+
+# ドキュメント・メモ
+docs/
+*.plan.md

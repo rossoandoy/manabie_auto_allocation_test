@@ -11,8 +11,12 @@ function onOpen() {
     .addItem('🎓 4. 講師用：データを保存', 'saveTeacherData')
     .addSeparator()
     .addItem('📊 5. 結果をスケジュール表で表示', 'visualizeAllSchedules')
+    .addItem('📄 印刷用スケジュール表を出力', 'showScheduleExportDialog')
     .addSeparator()
     .addItem('🗑️ 6. 配置結果をリセット', 'resetAllocation')
+    .addToUi();
+  ui.createMenu('📊 講師配分集計')
+    .addItem('講師別：計画vs配置・バランスを表示', 'showTeacherAllocationReport')
     .addToUi();
 }
 
@@ -118,8 +122,10 @@ function createMatrixSheet(listSheetName, uiSheetName, labelName) {
   // --------------------------------------------------
   // 3. データ構築と書き込み
   // --------------------------------------------------
-  const slotData = sheetSlots.getRange(2, 1, sheetSlots.getLastRow() - 1, 3).getValues();
-  const listData = sheetList.getRange(2, 1, sheetList.getLastRow() - 1, 2).getValues();
+  const slotData = sheetSlots.getRange(2, 1, sheetSlots.getLastRow() - 1, 3).getValues()
+    .filter(row => row[0] !== '' && row[1] !== '' && row[2] !== '');
+  const listData = sheetList.getRange(2, 1, sheetList.getLastRow() - 1, 2).getValues()
+    .filter(row => row[0] !== '' && row[1] !== '');
 
   // ヘッダー（固定エリア）
   sheetUI.getRange(1, 1).setValue('id');
@@ -178,13 +184,16 @@ function createMatrixSheet(listSheetName, uiSheetName, labelName) {
   nameColRange.setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
   nameColRange.setVerticalAlignment("middle");
 
+  // 日付グループの視覚区切り
+  applyDateGroupStyle(sheetUI, slotData, lastRow, 3);
+
   if (savedWidths) {
     setColumnWidthsMap(sheetUI, savedWidths);
   } else {
     sheetUI.autoResizeColumns(2, lastCol - 1);
     sheetUI.setColumnWidth(2, 160);
   }
-  
+
   Browser.msgBox(`完了: '${uiSheetName}' を更新しました。`);
 }
 
@@ -286,8 +295,10 @@ function visualizeScheduleFor(mode) {
   }
 
   // --- データ準備 ---
-  const slotData = sheetSlots.getRange(2, 1, sheetSlots.getLastRow() - 1, 3).getValues();
-  const listData = sheetList.getRange(2, 1, sheetList.getLastRow() - 1, 2).getValues();
+  const slotData = sheetSlots.getRange(2, 1, sheetSlots.getLastRow() - 1, 3).getValues()
+    .filter(row => row[0] !== '' && row[1] !== '' && row[2] !== '');
+  const listData = sheetList.getRange(2, 1, sheetList.getLastRow() - 1, 2).getValues()
+    .filter(row => row[0] !== '' && row[1] !== '');
   const allocValues = sheetAllocated.getDataRange().getValues();
   const allocHeader = allocValues[0];
   const allocData = allocValues.slice(1);
@@ -305,6 +316,26 @@ function visualizeScheduleFor(mode) {
 
   const slotMap = {}; slotData.forEach((row, i) => slotMap[row[0]] = i);
   const personMap = {}; listData.forEach((row, i) => personMap[row[0]] = i);
+
+  // 各個人の available な slot_id のセットを取得（I51 / I52 に基づく）
+  const availabilityMap = new Map();
+  listData.forEach(row => availabilityMap.set(row[0], new Set()));
+  const availabilitySheetName = isStudent ? 'I51_student_availability' : 'I52_teacher_availability';
+  const sheetAvailability = ss.getSheetByName(availabilitySheetName);
+  if (sheetAvailability && sheetAvailability.getLastRow() >= 2) {
+    const availHeader = sheetAvailability.getRange(1, 1, 1, 2).getValues()[0];
+    const idColAvail = (availHeader[0] === idColName || String(availHeader[0]).trim() === idColName) ? 0 : 1;
+    const slotColAvail = (availHeader[1] === 'slot_id' || String(availHeader[1]).trim() === 'slot_id') ? 1 : 0;
+    const availData = sheetAvailability.getRange(2, 1, sheetAvailability.getLastRow(), 2).getValues();
+    availData.forEach(row => {
+      const pid = row[idColAvail];
+      const sid = row[slotColAvail];
+      if (pid != null && pid !== '' && sid != null && sid !== '') {
+        if (!availabilityMap.has(pid)) availabilityMap.set(pid, new Set());
+        availabilityMap.get(pid).add(String(sid).trim());
+      }
+    });
+  }
 
   // マトリクス作成
   const numRows = listData.length + 2;
@@ -364,6 +395,24 @@ function visualizeScheduleFor(mode) {
   dataRange.setVerticalAlignment('middle');
   dataRange.setHorizontalAlignment('center');
   sheetViz.getRange(2, 2, numRows - 1, numCols - 1).setBorder(true, true, true, true, true, true);
+
+  // 日付グループの視覚区切り
+  applyDateGroupStyle(sheetViz, slotData, numRows, 3);
+
+  // not available な slot をグレーアウト（I51 / I52 に含まれない (person, slot)）
+  const grayColor = '#e0e0e0';
+  for (let r = 2; r < numRows; r++) {
+    const personId = outputMatrix[r][0];
+    const availableSlots = availabilityMap.get(personId);
+    for (let c = 2; c < numCols; c++) {
+      const slotId = outputMatrix[0][c];
+      const slotStr = slotId != null ? String(slotId).trim() : '';
+      const isAvailable = availableSlots && slotStr !== '' && availableSlots.has(slotStr);
+      if (!isAvailable) {
+        sheetViz.getRange(r + 1, c + 1).setBackground(grayColor);
+      }
+    }
+  }
 
   if (savedWidths) {
     setColumnWidthsMap(sheetViz, savedWidths);
@@ -425,6 +474,57 @@ function resetAllocation() {
   });
 
   Browser.msgBox(`リセット完了: ${resetCount} シートをクリアしました。\n再度Colabから最適化を実行してください。`);
+}
+
+// ==================================================
+//  ユーティリティ関数（日付グループの視覚区切り）
+// ==================================================
+
+/**
+ * 日付が変わる列に太い左罫線を引き、ヘッダー行の背景色を日付ごとに交互に切り替える
+ * @param {Sheet} sheet - 対象シート
+ * @param {Array} slotData - [[slotId, dateVal, timeId], ...] I05の中身
+ * @param {number} numRows - データ行数（ヘッダー含む全行数）
+ * @param {number} colOffset - スロット列の開始列番号（0-indexed配列上の位置ではなくシート上の列番号）
+ */
+function applyDateGroupStyle(sheet, slotData, numRows, colOffset) {
+  const colors = ['#e8f0fe', '#ffffff']; // 交互の背景色（薄い青 / 白）
+  let colorIndex = 0;
+  let prevDateStr = null;
+  let groupStartCol = colOffset;
+
+  for (let i = 0; i <= slotData.length; i++) {
+    const col = i + colOffset;
+    const dateStr = i < slotData.length
+      ? Utilities.formatDate(new Date(slotData[i][1]), Session.getScriptTimeZone(), "yyyy-MM-dd")
+      : null;
+
+    if (dateStr !== prevDateStr && prevDateStr !== null) {
+      // 前のグループにヘッダー背景色を適用
+      const groupLen = col - groupStartCol;
+      if (groupLen > 0) {
+        sheet.getRange(2, groupStartCol, 1, groupLen).setBackground(colors[colorIndex % 2]);
+      }
+      // 日付境界に太い左罫線（ヘッダー〜最終行）
+      if (i < slotData.length) {
+        sheet.getRange(2, col, numRows - 1, 1).setBorder(
+          null, true, null, null, null, null,
+          '#666666', SpreadsheetApp.BorderStyle.SOLID_MEDIUM
+        );
+      }
+      colorIndex++;
+      groupStartCol = col;
+    }
+    if (prevDateStr === null && dateStr !== null) {
+      groupStartCol = col;
+    }
+    prevDateStr = dateStr;
+  }
+  // 最後のグループの背景色
+  const lastGroupLen = slotData.length + colOffset - groupStartCol;
+  if (lastGroupLen > 0) {
+    sheet.getRange(2, groupStartCol, 1, lastGroupLen).setBackground(colors[colorIndex % 2]);
+  }
 }
 
 // ==================================================

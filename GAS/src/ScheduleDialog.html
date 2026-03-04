@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body { font-family: sans-serif; padding: 20px; color: #333; }
+      .form-group { margin-bottom: 20px; text-align: left;}
+      label { font-weight: bold; display: block; margin-bottom: 8px; font-size: 14px;}
+      .radio-group { font-weight: normal; margin-bottom: 8px; cursor: pointer; display: block;}
+      .radio-group-inline { font-weight: normal; margin-bottom: 5px; cursor: pointer; display: inline-block; margin-right: 15px;}
+      select { width: 100%; padding: 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; margin-bottom: 10px;}
+      button { width: 100%; padding: 14px 20px; font-size: 15px; background-color: #34a853; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight:bold; margin-top: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);}
+      button:hover { background-color: #2d9047; }
+      #msg { color: #d93025; font-size: 13px; margin-top: 15px; font-weight: bold; text-align: center;}
+      .tab-container { background: #e8f0fe; padding: 15px; border-radius: 6px; margin-bottom: 20px;}
+      .hidden { display: none; }
+      .desc { font-size: 11px; color: #666; margin-left: 24px; display: block; }
+    </style>
+  </head>
+  <body>
+    <div class="tab-container">
+      <label>1. 出力する対象</label>
+      <label class="radio-group-inline"><input type="radio" name="targetType" value="student" checked onchange="toggleSelect()"> 🎓 生徒</label>
+      <label class="radio-group-inline"><input type="radio" name="targetType" value="teacher" onchange="toggleSelect()"> 👨‍🏫 講師</label>
+    </div>
+
+    <div class="form-group">
+      <label id="selectLabel">2. 対象者の選択</label>
+      <select id="studentSelect"><option value="">読込中...</option></select>
+      <select id="teacherSelect" class="hidden"><option value="">読込中...</option></select>
+    </div>
+
+    <div class="form-group">
+      <label>3. 出力フォーマット</label>
+      <label class="radio-group">
+        <input type="radio" name="format" value="vertical" checked> タテ型リスト
+        <span class="desc">縦に日付、横に時限が並ぶ一般的な時間割</span>
+      </label>
+      <label class="radio-group">
+        <input type="radio" name="format" value="horizontal"> ヨコ型リスト (A4横印刷用)
+        <span class="desc">横に日付が並び、14日ごとに折り返して出力</span>
+      </label>
+      <label class="radio-group">
+        <input type="radio" name="format" value="calendar"> 月間カレンダー形式
+        <span class="desc">カレンダーのマス目に授業内容を書き出し</span>
+      </label>
+    </div>
+
+    <button onclick="submitData()">全期間のスケジュールを出力</button>
+    <div id="msg"></div>
+    
+    <script>
+      window.onload = function() {
+        google.script.run.withSuccessHandler(function(data) {
+          setupSelect('studentSelect', data.students);
+          setupSelect('teacherSelect', data.teachers);
+        }).getDropdownLists();
+      };
+
+      function setupSelect(id, items) {
+        const select = document.getElementById(id);
+        select.innerHTML = '<option value="">-- 選択してください --</option>';
+        items.forEach(function(name) {
+          const opt = document.createElement('option');
+          opt.value = name; opt.innerText = name;
+          select.appendChild(opt);
+        });
+      }
+
+      function toggleSelect() {
+        const isStudent = document.querySelector('input[name="targetType"]:checked').value === 'student';
+        document.getElementById('studentSelect').className = isStudent ? '' : 'hidden';
+        document.getElementById('teacherSelect').className = isStudent ? 'hidden' : '';
+        document.getElementById('selectLabel').innerText = isStudent ? '2. 対象の生徒を選択' : '2. 対象の講師を選択';
+      }
+
+      function submitData() {
+        const type = document.querySelector('input[name="targetType"]:checked').value;
+        const targetName = type === 'student' ? document.getElementById('studentSelect').value : document.getElementById('teacherSelect').value;
+        const format = document.querySelector('input[name="format"]:checked').value;
+        
+        if (!targetName) { alert("対象を選択してください。"); return; }
+        
+        document.getElementById('msg').innerText = "生成中... そのままお待ちください。";
+        
+        const params = {
+          targetType: type,
+          targetName: targetName,
+          format: format
+        };
+        
+        google.script.run.withSuccessHandler(function(res) {
+          if (res && res.error) {
+            alert(res.error);
+            document.getElementById('msg').innerText = "";
+          } else {
+            google.script.host.close(); 
+          }
+        }).generateScheduleMaster(params);
+      }
+    </script>
+  </body>
+</html>
