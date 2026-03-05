@@ -105,60 +105,163 @@ function showTeacherAllocationReport() {
   }
 
   const allocMap = new Map();
-  allocValues.slice(1).forEach(row => {
-    const tId = row[o01Teacher] != null ? String(row[o01Teacher]).trim() : '';
-    const sId = row[o01Student] != null ? String(row[o01Student]).trim() : '';
-    const cId = row[o01Subject] != null ? String(row[o01Subject]).trim() : '';
+  const o01SlotIdx = headerO01.indexOf('slot_id') >= 0 ? headerO01.indexOf('slot_id') : 0;
+  const teacherSlotAllocs = {};
+  allocValues.slice(1).forEach(function (row) {
+    var tId = row[o01Teacher] != null ? String(row[o01Teacher]).trim() : '';
+    var sId = row[o01Student] != null ? String(row[o01Student]).trim() : '';
+    var cId = row[o01Subject] != null ? String(row[o01Subject]).trim() : '';
+    var slotId = row[o01SlotIdx] != null ? String(row[o01SlotIdx]).trim() : '';
     if (!tId || !sId || !cId) return;
-    const key = `${tId}\t${sId}\t${cId}`;
+    var key = tId + '\t' + sId + '\t' + cId;
     allocMap.set(key, (allocMap.get(key) || 0) + 1);
+    var slotKey = tId + '\t' + slotId;
+    if (!teacherSlotAllocs[slotKey]) teacherSlotAllocs[slotKey] = [];
+    teacherSlotAllocs[slotKey].push({ studentId: sId, subjectId: cId });
   });
 
-  // 講師ごとの集計用
+  // I52: 講師の勤務可能コマ数（行数＝可能コマ数）と slot セット
+  const teacherAvailableCount = new Map();
+  const teacherSlotsSet = new Map();
+  var sheetI52 = ss.getSheetByName('I52_teacher_availability');
+  if (sheetI52 && sheetI52.getLastRow() >= 2) {
+    var h52 = sheetI52.getRange(1, 1, 1, 2).getValues()[0].map(function (x) { return String(x || '').trim(); });
+    var colT = h52[0] === 'teacher_id' || h52[0].indexOf('teacher') !== -1 ? 0 : 1;
+    var colS = h52[1] === 'slot_id' || h52[1].indexOf('slot') !== -1 ? 1 : 0;
+    sheetI52.getRange(2, 1, sheetI52.getLastRow(), 2).getValues().forEach(function (r) {
+      var tid = String(r[colT] || '').trim();
+      var sid = String(r[colS] || '').trim();
+      if (!tid || !sid) return;
+      teacherAvailableCount.set(tid, (teacherAvailableCount.get(tid) || 0) + 1);
+      if (!teacherSlotsSet.has(tid)) teacherSlotsSet.set(tid, new Set());
+      teacherSlotsSet.get(tid).add(sid);
+    });
+  }
+
+  // I51: 生徒の希望スケジュール（slot_id のセット）
+  const studentSlotsSet = new Map();
+  var sheetI51 = ss.getSheetByName('I51_student_availability');
+  if (sheetI51 && sheetI51.getLastRow() >= 2) {
+    var h51 = sheetI51.getRange(1, 1, 1, 2).getValues()[0].map(function (x) { return String(x || '').trim(); });
+    var colSt = h51[0] === 'student_id' || h51[0].indexOf('student') !== -1 ? 0 : 1;
+    var colSl = h51[1] === 'slot_id' || h51[1].indexOf('slot') !== -1 ? 1 : 0;
+    sheetI51.getRange(2, 1, sheetI51.getLastRow(), 2).getValues().forEach(function (r) {
+      var stid = String(r[colSt] || '').trim();
+      var sl = String(r[colSl] || '').trim();
+      if (!stid || !sl) return;
+      if (!studentSlotsSet.has(stid)) studentSlotsSet.set(stid, new Set());
+      studentSlotsSet.get(stid).add(sl);
+    });
+  }
+
+  // I06_teachable_subjects: 講師の指導可能科目 (teacher_id -> Set<subject_id>)
+  const teacherTeachableSubjects = new Map();
+  var sheetI06 = ss.getSheetByName('I06_teachable_subjects');
+  if (sheetI06 && sheetI06.getLastRow() >= 2) {
+    var h06 = sheetI06.getRange(1, 1, 1, 2).getValues()[0].map(function (x) { return String(x || '').trim().toLowerCase(); });
+    var colT = (h06[0] || '').indexOf('teacher') !== -1 ? 0 : 1;
+    var colS = (h06[1] || '').indexOf('subject') !== -1 ? 1 : 0;
+    sheetI06.getRange(2, 1, sheetI06.getLastRow(), 2).getValues().forEach(function (r) {
+      var tid = String(r[colT] || '').trim();
+      var sid = String(r[colS] || '').trim();
+      if (!tid || !sid) return;
+      if (!teacherTeachableSubjects.has(tid)) teacherTeachableSubjects.set(tid, new Set());
+      teacherTeachableSubjects.get(tid).add(sid);
+    });
+  }
+
+  // I05_lesson_slot と I02_time_range で slot_id -> 日付時限ラベル
+  const slotIdToLabel = new Map();
+  var sheetI05 = ss.getSheetByName('I05_lesson_slot');
+  var sheetI02 = ss.getSheetByName('I02_time_range');
+  if (sheetI05 && sheetI05.getLastRow() >= 2 && sheetI02 && sheetI02.getLastRow() >= 2) {
+    var trMap = new Map();
+    sheetI02.getRange(2, 1, sheetI02.getLastRow(), 2).getValues().forEach(function (r) {
+      var id = r[0];
+      var desc = r[1] != null ? String(r[1]).trim() : '';
+      trMap.set(id, desc);
+      trMap.set(String(id).trim(), desc);
+    });
+    sheetI05.getRange(2, 1, sheetI05.getLastRow(), 3).getValues().forEach(function (r) {
+      var slotId = r[0];
+      var dateVal = r[1];
+      var timeId = r[2];
+      if (slotId == null || slotId === '') return;
+      var dateStr = dateVal ? Utilities.formatDate(new Date(dateVal), Session.getScriptTimeZone(), 'MM/dd') : '';
+      var timeDesc = trMap.get(timeId) || trMap.get(String(timeId).trim()) || (timeId != null ? String(timeId) : '');
+      var label = (dateStr && timeDesc) ? dateStr + ' ' + timeDesc : (dateStr || timeDesc || 'slot_' + slotId);
+      slotIdToLabel.set(String(slotId).trim(), label);
+      if (typeof slotId === 'number') slotIdToLabel.set(slotId, label);
+    });
+  }
+
+  // 講師ごとの集計用（計画内の配置＋計画外の配置を分離）
   const teacherSummary = new Map();
   const detailRows = [];
 
-  planMap.forEach((planned, key) => {
-    const [tId, sId, cId] = key.split('\t');
-    const allocated = allocMap.get(key) || 0;
-    const rate = planned > 0 ? Math.round((allocated / planned) * 1000) / 10 : 0;
-    const tName = teacherNameMap.get(tId) || tId;
-    const sName = studentNameMap.get(sId) || sId;
-    const cName = subjectNameMap.get(cId) || cId;
-    detailRows.push([tName, sName, cName, planned, allocated, rate]);
+  planMap.forEach(function (planned, key) {
+    var parts = key.split('\t');
+    var tId = parts[0], sId = parts[1], cId = parts[2];
+    var allocated = allocMap.get(key) || 0;
+    var rate = planned > 0 ? Math.round((allocated / planned) * 1000) / 10 : 0;
+    var tName = teacherNameMap.get(tId) || tId;
+    var sName = studentNameMap.get(sId) || sId;
+    var cName = subjectNameMap.get(cId) || cId;
+    var reason = inferUnallocatedReason(tId, sId, cId, planned, allocated, teacherSlotsSet, studentSlotsSet, teacherSlotAllocs, planMap, teacherAvailableCount, studentNameMap, slotIdToLabel, teacherTeachableSubjects);
+    detailRows.push([tName, sName, cName, planned, allocated, rate, reason]);
 
     if (!teacherSummary.has(tId)) {
-      teacherSummary.set(tId, { teacherName: tName, planned: 0, allocated: 0, perStudent: new Map() });
+      teacherSummary.set(tId, { teacherName: tName, planned: 0, allocatedInPlan: 0, allocatedOutPlan: 0, perStudent: new Map() });
     }
-    const sum = teacherSummary.get(tId);
+    var sum = teacherSummary.get(tId);
     sum.planned += planned;
-    sum.allocated += allocated;
+    sum.allocatedInPlan += allocated;
     sum.perStudent.set(sId, (sum.perStudent.get(sId) || 0) + allocated);
   });
 
-  // 講師サマリ＋バランス指標
+  // O01 にのみある（I07計画外）講師・生徒・科目の明細を追加し、講師サマリに計画外配置を加算
+  allocMap.forEach(function (allocated, key) {
+    if (planMap.has(key)) return;
+    var parts = key.split('\t');
+    var tId = parts[0], sId = parts[1], cId = parts[2];
+    var tName = teacherNameMap.get(tId) || tId;
+    var sName = studentNameMap.get(sId) || sId;
+    var cName = subjectNameMap.get(cId) || cId;
+    detailRows.push([tName, sName, cName, 0, allocated, '-', 'I07計画外（担当外への配置）']);
+    if (!teacherSummary.has(tId)) {
+      teacherSummary.set(tId, { teacherName: tName, planned: 0, allocatedInPlan: 0, allocatedOutPlan: 0, perStudent: new Map() });
+    }
+    teacherSummary.get(tId).allocatedOutPlan += allocated;
+  });
+
+  // 講師サマリ＋勤務可能コマ数＋計画内/計画外/総配置＋バランス指標
   const summaryRows = [];
-  teacherSummary.forEach((sum, tId) => {
-    const counts = Array.from(sum.perStudent.values());
-    const n = counts.length;
-    const mean = n > 0 ? counts.reduce((a, b) => a + b, 0) / n : 0;
-    const variance = n > 0 ? counts.reduce((acc, c) => acc + Math.pow(c - mean, 2), 0) / n : 0;
-    const stdDev = Math.sqrt(variance);
-    const maxMinDiff = n > 1 ? Math.max(...counts) - Math.min(...counts) : 0;
-    const balanceCv = mean > 0 ? Math.round((stdDev / mean) * 1000) / 10 : 0;
-    const totalRate = sum.planned > 0 ? Math.round((sum.allocated / sum.planned) * 1000) / 10 : 0;
+  teacherSummary.forEach(function (sum, tId) {
+    var counts = Array.from(sum.perStudent.values());
+    var n = counts.length;
+    var mean = n > 0 ? counts.reduce(function (a, b) { return a + b; }, 0) / n : 0;
+    var variance = n > 0 ? counts.reduce(function (acc, c) { return acc + Math.pow(c - mean, 2); }, 0) / n : 0;
+    var stdDev = Math.sqrt(variance);
+    var maxMinDiff = n > 1 ? Math.max.apply(null, counts) - Math.min.apply(null, counts) : 0;
+    var balanceCv = mean > 0 ? Math.round((stdDev / mean) * 1000) / 10 : 0;
+    var totalAlloc = (sum.allocatedInPlan || 0) + (sum.allocatedOutPlan || 0);
+    var totalRate = sum.planned > 0 ? Math.round((sum.allocatedInPlan / sum.planned) * 1000) / 10 : 0;
+    var availableCount = teacherAvailableCount.get(tId) || 0;
     summaryRows.push([
       sum.teacherName,
       n,
+      availableCount,
       sum.planned,
-      sum.allocated,
+      sum.allocatedInPlan || 0,
+      sum.allocatedOutPlan || 0,
+      totalAlloc,
       totalRate,
       Math.round(stdDev * 100) / 100,
       maxMinDiff,
       balanceCv
     ]);
   });
-  summaryRows.sort((a, b) => (a[0] || '').localeCompare(b[0] || ''));
+  summaryRows.sort(function (a, b) { return (a[0] || '').localeCompare(b[0] || ''); });
 
   // 出力シート
   const outSheetName = 'O04_teacher_allocation_report';
@@ -168,25 +271,37 @@ function showTeacherAllocationReport() {
   let row = 1;
   sheetOut.getRange(row, 1).setValue('【講師別サマリ】計画vs配置・バランス').setFontSize(12).setFontWeight('bold');
   row += 2;
-  const summaryHeaders = ['講師名', '担当生徒数', '総計画コマ', '総配置コマ', '充足率(%)', 'バランス_標準偏差', 'バランス_最大最小差', 'バランス_変動係数(%)'];
+  const summaryHeaders = ['講師名', '担当生徒数', '勤務可能コマ数', '総計画コマ', '計画内配置', '計画外配置', '総配置コマ', '充足率(%)', 'バランス_標準偏差', 'バランス_最大最小差', 'バランス_変動係数(%)'];
   sheetOut.getRange(row, 1, 1, summaryHeaders.length).setValues([summaryHeaders]);
   sheetOut.getRange(row, 1, 1, summaryHeaders.length).setBackground('#434343').setFontColor('white').setFontWeight('bold');
   row++;
   if (summaryRows.length > 0) {
     sheetOut.getRange(row, 1, summaryRows.length, summaryHeaders.length).setValues(summaryRows);
     sheetOut.getRange(row, 1, summaryRows.length, summaryHeaders.length).setBorder(true, true, true, true, true, true);
+    var summaryStartRow = row;
+    for (var i = 0; i < summaryRows.length; i++) {
+      var r = summaryStartRow + i;
+      var avail = summaryRows[i][2];
+      var plan = summaryRows[i][3];
+      var allocIn = summaryRows[i][4];
+      if (avail < plan) sheetOut.getRange(r, 4).setBackground('#f4c7c3');
+      if (allocIn < plan) sheetOut.getRange(r, 5).setBackground('#f4c7c3');
+    }
     row += summaryRows.length;
   }
   row += 2;
   sheetOut.getRange(row, 1).setValue('【明細】講師・生徒・科目の予定コマ数と配置コマ数の対応（講師でソート）').setFontSize(12).setFontWeight('bold');
   row += 2;
-  const detailHeaders = ['講師名', '生徒名', '科目名', '予定コマ数', '配置コマ数', '充足率(%)'];
+  const detailHeaders = ['講師名', '生徒名', '科目名', '予定コマ数', '配置コマ数', '充足率(%)', '未配置理由'];
   sheetOut.getRange(row, 1, 1, detailHeaders.length).setValues([detailHeaders]);
   sheetOut.getRange(row, 1, 1, detailHeaders.length).setBackground('#434343').setFontColor('white').setFontWeight('bold');
   row++;
   detailRows.sort(function (a, b) {
     const cmpTeacher = (a[0] || '').localeCompare(b[0] || '');
     if (cmpTeacher !== 0) return cmpTeacher;
+    const planA = (a[3] !== 0 && a[3] !== undefined && a[3] !== null) ? 0 : 1;
+    const planB = (b[3] !== 0 && b[3] !== undefined && b[3] !== null) ? 0 : 1;
+    if (planA !== planB) return planA - planB;
     const cmpStudent = (a[1] || '').localeCompare(b[1] || '');
     if (cmpStudent !== 0) return cmpStudent;
     return (a[2] || '').localeCompare(b[2] || '');
@@ -194,6 +309,27 @@ function showTeacherAllocationReport() {
   if (detailRows.length > 0) {
     sheetOut.getRange(row, 1, detailRows.length, detailHeaders.length).setValues(detailRows);
     sheetOut.getRange(row, 1, detailRows.length, detailHeaders.length).setBorder(true, true, true, true, true, true);
+    var detailStartRow = row;
+    for (var d = 0; d < detailRows.length; d++) {
+      var rate = detailRows[d][5];
+      var detailRowNum = detailStartRow + d;
+      var bg = null;
+      if (typeof rate === 'number') {
+        if (rate >= 100) {
+          // 100%充足は色をつけない
+        } else if (rate <= 25) {
+          bg = '#f4c7c3';
+        } else if (rate <= 50) {
+          bg = '#fce8b2';
+        } else if (rate <= 75) {
+          bg = '#fff2cc';
+        } else {
+          bg = '#d9ead3';
+        }
+      }
+      // 計画外（rate === '-'）は色なし
+      if (bg) sheetOut.getRange(detailRowNum, 1, detailRowNum, detailHeaders.length).setBackground(bg);
+    }
   }
 
   sheetOut.autoResizeColumns(1, Math.max(summaryHeaders.length, detailHeaders.length));
@@ -201,10 +337,73 @@ function showTeacherAllocationReport() {
   Browser.msgBox('講師別計画vs配置・バランス集計を出力しました。シート: ' + outSheetName);
 }
 
+/**
+ * 未配置理由を推定（希望科目と指導可能科目の不一致、講師・生徒の希望日、競合、空きコマ不足など）
+ * 競合時は 日付時限 と競合生徒名を「日付時限: 02/15 10:00, 02/16 11:00 | 競合生徒: A, B」形式で付加
+ */
+function inferUnallocatedReason(tId, sId, cId, planned, allocated, teacherSlotsSet, studentSlotsSet, teacherSlotAllocs, planMap, teacherAvailableCount, studentNameMap, slotIdToLabel, teacherTeachableSubjects) {
+  if (allocated >= planned) return '充足';
+  var teachable = teacherTeachableSubjects && teacherTeachableSubjects.get(tId);
+  if (teachable && teachable.size > 0) {
+    var cIdStr = String(cId || '').trim();
+    if (cIdStr && !teachable.has(cIdStr)) return '希望科目と指導可能科目の不一致';
+  }
+  var tSlots = teacherSlotsSet.get(tId);
+  var sSlots = studentSlotsSet.get(sId);
+  if (!tSlots || tSlots.size === 0) return '講師の勤務可能データなし';
+  if (!sSlots || sSlots.size === 0) return '生徒の希望日データなし';
+  var common = [];
+  tSlots.forEach(function (slot) {
+    var slotStr = String(slot).trim();
+    if (sSlots.has(slotStr) || sSlots.has(slot)) common.push(slotStr);
+  });
+  if (common.length === 0) return '講師の勤務日と生徒の希望日が不一致';
+  var conflictSlots = [];
+  var conflictStudentIds = {};
+  for (var i = 0; i < common.length; i++) {
+    var slotKey = tId + '\t' + common[i];
+    var allocs = teacherSlotAllocs[slotKey];
+    if (allocs) {
+      for (var j = 0; j < allocs.length; j++) {
+        if (allocs[j].studentId !== sId) {
+          conflictSlots.push(common[i]);
+          conflictStudentIds[allocs[j].studentId] = true;
+          break;
+        }
+      }
+    }
+  }
+  if (conflictSlots.length > 0) {
+    var labels = [];
+    for (var k = 0; k < conflictSlots.length && k < 20; k++) {
+      var sid = conflictSlots[k];
+      var lab = slotIdToLabel && (slotIdToLabel.get(sid) || slotIdToLabel.get(Number(sid)));
+      labels.push(lab || ('slot_' + sid));
+    }
+    var dateTimeStr = labels.join(', ');
+    if (conflictSlots.length > 20) dateTimeStr += '…';
+    var names = [];
+    for (var sid in conflictStudentIds) {
+      names.push(studentNameMap && studentNameMap.get(sid) ? studentNameMap.get(sid) : sid);
+    }
+    names.sort();
+    var nameStr = names.slice(0, 10).join(', ');
+    if (names.length > 10) nameStr += ' 他' + (names.length - 10) + '名';
+    return '同じ時限で他生徒と競合（日付時限: ' + dateTimeStr + ' | 競合生徒: ' + nameStr + '）';
+  }
+  var teacherTotalPlanned = 0;
+  planMap.forEach(function (val, key) {
+    if (key.indexOf(tId + '\t') === 0) teacherTotalPlanned += val;
+  });
+  var available = teacherAvailableCount.get(tId) || 0;
+  if (available < teacherTotalPlanned) return '講師の空きコマ不足';
+  return 'その他（制約に引っかかり）';
+}
+
 function findColumnIndex(headerRow, candidates) {
-  for (let i = 0; i < headerRow.length; i++) {
-    const h = (headerRow[i] || '').toLowerCase();
-    for (let j = 0; j < candidates.length; j++) {
+  for (var i = 0; i < headerRow.length; i++) {
+    var h = (headerRow[i] || '').toLowerCase();
+    for (var j = 0; j < candidates.length; j++) {
       if (h.indexOf((candidates[j] || '').toLowerCase()) !== -1) return i;
     }
   }
